@@ -10,6 +10,9 @@ const requestLogger = require('./middleware/requestLogger');
 const { rateLimitMiddleware } = require('./middleware/rateLimiter');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 
+const superadminRoutes = require('./routes/superadminRoutes');
+const authRoutes = require('./routes/authRoutes');
+
 const app = express();
 
 // --- Trust proxy (for rate limiting by IP behind reverse proxy) ---
@@ -54,12 +57,23 @@ app.use(requestLogger);
 // --- Rate Limiting ---
 app.use(rateLimitMiddleware);
 
+app.use('/api/superadmin', superadminRoutes);
+app.use('/api/auth', authRoutes);
+
 // --- Health Check Endpoint ---
 app.get('/api/health', (req, res) => {
-    res.status(200).json({ 
-        status: 'UP', 
+    const connectionStats = tenantDBManager.getConnectionStats();
+    
+    res.status(200).json({
+        status: 'UP',
         timestamp: new Date().toISOString(),
         environment: config.nodeEnv,
+        version: '1.0.0',
+        database: {
+            master: connectionStats.masterConnected ? 'connected' : 'disconnected',
+            cachedTenantConnections: connectionStats.cachedTenantConnections,
+            maxCachedConnections: connectionStats.maxCachedConnections,
+        },
     });
 });
 

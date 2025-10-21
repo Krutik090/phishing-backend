@@ -1,0 +1,59 @@
+# docker-compose.yml (in your project root)
+version: '3.8'
+
+services:
+  mongo-primary:
+    image: mongo:7.0
+    container_name: mongo-primary
+    restart: always
+    command: mongod --replSet rs0 --bind_ip_all
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-primary-data:/data/db
+    networks:
+      - mongo-network
+    healthcheck:
+      test: echo "try { rs.status() } catch (err) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo-primary:27017'}]}) }" | mongosh --port 27017 --quiet
+      interval: 5s
+      timeout: 30s
+      start_period: 0s
+      start_interval: 1s
+      retries: 30
+
+  mongo-secondary-1:
+    image: mongo:7.0
+    container_name: mongo-secondary-1
+    restart: always
+    command: mongod --replSet rs0 --bind_ip_all
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo-secondary-1-data:/data/db
+    networks:
+      - mongo-network
+    depends_on:
+      - mongo-primary
+
+  mongo-secondary-2:
+    image: mongo:7.0
+    container_name: mongo-secondary-2
+    restart: always
+    command: mongod --replSet rs0 --bind_ip_all
+    ports:
+      - "27019:27017"
+    volumes:
+      - mongo-secondary-2-data:/data/db
+    networks:
+      - mongo-network
+    depends_on:
+      - mongo-primary
+
+volumes:
+  mongo-primary-data:
+  mongo-secondary-1-data:
+  mongo-secondary-2-data:
+
+networks:
+  mongo-network:
+    driver: bridge

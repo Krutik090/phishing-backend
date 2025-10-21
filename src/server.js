@@ -1,45 +1,71 @@
 // src/server.js
 const app = require('./app');
-const connectDB = require('./config/database');
 const config = require('./config/environment');
-const logger = require('./config/logger'); // ✅ Only import your configured logger
-const mongoose = require('mongoose');
+const logger = require('./config/logger');
+const tenantDBManager = require('./config/tenantDatabase');
 
-// ✅ TEST LOGS (verify file logging works)
+// Test logging
 logger.info('🚀 Application starting...');
-logger.error('❌ Test error - should appear in error.log');
-logger.warn('⚠️  Test warning');
-logger.debug('🐛 Test debug message');
+logger.debug('Debug mode enabled');
 
 // --- Start Server ---
 const startServer = async () => {
     try {
-        logger.info('📡 Attempting to connect to MongoDB...'); // ✅ Use logger
-        await connectDB();
-        logger.info('✅ MongoDB connected successfully'); // ✅ Use logger
+        // 1. Connect to Master Database
+        logger.info('📡 Connecting to Master database...');
+        await tenantDBManager.connectMaster();
+        logger.info('✅ Master database connected successfully');
 
+        // 2. Start HTTP Server
         const server = app.listen(config.port, () => {
-            logger.info(`✅ Server running in ${config.nodeEnv} mode on port ${config.port}`); // ✅ Use logger
+            logger.info(`✅ Server running in ${config.nodeEnv} mode on port ${config.port}`);
+            logger.info(`🌐 Frontend URL: ${config.frontendUrl}`);
+            logger.info(`📊 Health check: http://localhost:${config.port}/api/health`);
         });
 
-        // Graceful Shutdown Handling
-        const shutdown = (signal) => {
-            logger.info(`${signal} signal received: closing HTTP server`); // ✅ Use logger
-            server.close(() => {
-                logger.info('HTTP server closed'); // ✅ Use logger
-                mongoose.connection.close(false, () => {
-                    logger.info('MongoDB connection closed.'); // ✅ Use logger
+        // 3. Graceful Shutdown Handling
+        const shutdown = async (signal) => {
+            logger.info(`${signal} signal received: closing HTTP server`);
+            
+            server.close(async () => {
+                logger.info('HTTP server closed');
+                
+                try {
+                    // Close all database connections
+                    await tenantDBManager.closeAllConnections();
+                    logger.info('All database connections closed');
                     process.exit(0);
-                });
+                } catch (error) {
+                    logger.error(`Error during shutdown: ${error.message}`);
+                    process.exit(1);
+                }
             });
+
+            // Force shutdown after 30 seconds
+            setTimeout(() => {
+                logger.error('Forced shutdown due to timeout');
+                process.exit(1);
+            }, 30000);
         };
 
         process.on('SIGTERM', () => shutdown('SIGTERM'));
         process.on('SIGINT', () => shutdown('SIGINT'));
 
+        // Handle uncaught exceptions
+        process.on('uncaughtException', (error) => {
+            logger.error(`Uncaught Exception: ${error.message}`);
+            logger.error(error.stack);
+            process.exit(1);
+        });
+
+        process.on('unhandledRejection', (reason, promise) => {
+            logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+            process.exit(1);
+        });
+
     } catch (error) {
-        logger.error(`❌ Failed to start server: ${error.message}`); // ✅ Use logger
-        logger.error(error.stack); // ✅ Log full stack trace
+        logger.error(`❌ Failed to start server: ${error.message}`);
+        logger.error(error.stack);
         process.exit(1);
     }
 };
