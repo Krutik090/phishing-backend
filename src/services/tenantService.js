@@ -34,13 +34,11 @@ class TenantService {
     async createTenant(tenantData, superadminId) {
         await this.ensureIndexes();
 
-        const session = await tenantDBManager.masterConnection.startSession();
         let transactionCommitted = false;
         let tenantCreated = null;
         let invitationCreated = null;
 
         try {
-            session.startTransaction();
 
             // 1. Validate input
             if (!tenantData.organizationName || !tenantData.subdomain || !tenantData.adminEmail) {
@@ -169,15 +167,9 @@ class TenantService {
             };
 
         } catch (error) {
-            // Only abort if transaction is still active
-            if (!transactionCommitted && session.inTransaction()) {
-                await session.abortTransaction();
-                logger.info('Transaction aborted');
-            }
+           
             logger.error(`❌ Tenant creation failed: ${error.message}`);
             throw error;
-        } finally {
-            session.endSession();
         }
     }
 

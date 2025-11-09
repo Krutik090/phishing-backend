@@ -3,12 +3,12 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser'); // npm install cookie-parser
-const mongoSanitize = require('express-mongo-sanitize'); // npm install express-mongo-sanitize
 const config = require('./config/environment');
 const logger = require('./config/logger');
 const requestLogger = require('./middleware/requestLogger');
 const { rateLimitMiddleware } = require('./middleware/rateLimiter');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
+const sanitize = require('./middleware/sanitize');
 
 const superadminRoutes = require('./routes/superadminRoutes');
 const authRoutes = require('./routes/authRoutes');
@@ -49,7 +49,8 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 app.use(cookieParser(config.cookieSecret)); // Parse signed cookies
 
 // --- Data Sanitization (prevent NoSQL injection) ---
-app.use(mongoSanitize());
+app.use(sanitize);
+
 
 // --- Request Logging (SOC 2 Audit Trail) ---
 app.use(requestLogger);
