@@ -3,6 +3,10 @@ const mongoose = require('mongoose');
 const config = require('./environment');
 const logger = require('./logger');
 
+// Import Tenant Schemas
+const { schema: UserSchema } = require('../models/tenant/User');
+const { schema: CampaignSchema } = require('../models/tenant/Campaign');
+
 /**
  * Multi-Tenant Database Manager
  * Manages connections to master database and tenant-specific databases
@@ -17,7 +21,6 @@ class TenantDatabaseManager {
 
     /**
      * Connect to master database
-     * Master DB stores: Superadmins, Tenants, Invitations, Global Audit Logs
      */
     async connectMaster() {
         if (this.masterConnection && this.masterConnection.readyState === 1) {
@@ -31,7 +34,7 @@ class TenantDatabaseManager {
                 serverSelectionTimeoutMS: 5000,
                 socketTimeoutMS: 45000,
                 family: 4,
-            });
+            }).asPromise(); // Ensure promise return
 
             // Event handlers
             this.masterConnection.on('connected', () => {
@@ -73,10 +76,10 @@ class TenantDatabaseManager {
             const { schema: SuperadminSchema } = require('../models/master/Superadmin');
             const { schema: InvitationSchema } = require('../models/master/Invitation');
 
-            // Register models with master connection
-            this.masterConnection.model('Tenant', TenantSchema);
-            this.masterConnection.model('Superadmin', SuperadminSchema);
-            this.masterConnection.model('Invitation', InvitationSchema);
+            // Register models with master connection (check if exists first)
+            if (!this.masterConnection.models['Tenant']) this.masterConnection.model('Tenant', TenantSchema);
+            if (!this.masterConnection.models['Superadmin']) this.masterConnection.model('Superadmin', SuperadminSchema);
+            if (!this.masterConnection.models['Invitation']) this.masterConnection.model('Invitation', InvitationSchema);
 
             this.modelsInitialized = true;
             logger.info('✅ Master database models initialized');
@@ -100,7 +103,6 @@ class TenantDatabaseManager {
                 logger.debug(`Using cached connection for tenant: ${tenantId}`);
                 return connection;
             } else {
-                // Remove stale connection
                 this.connections.delete(tenantId);
             }
         }
@@ -128,7 +130,10 @@ class TenantDatabaseManager {
                 serverSelectionTimeoutMS: 5000,
                 socketTimeoutMS: 45000,
                 family: 4,
-            });
+            }).asPromise();
+
+            // Register Tenant Models on this specific connection
+            this.registerTenantModels(connection);
 
             // Event handlers
             connection.on('connected', () => {
@@ -147,15 +152,16 @@ class TenantDatabaseManager {
             // Cache connection
             this.connections.set(tenantId, connection);
 
-            // Update last accessed timestamp
-            await this.updateTenantLastAccess(tenantId);
+            // Update last accessed timestamp (async, don't await)
+            this.updateTenantLastAccess(tenantId).catch(err => 
+                logger.warn(`Failed to update last access: ${err.message}`)
+            );
 
             // Enforce cache size limit
             if (this.connections.size > this.maxCachedConnections) {
                 await this.cleanupOldestConnection();
             }
 
-            logger.info(`✅ New tenant connection created: ${dbName}`);
             return connection;
 
         } catch (error) {
@@ -165,9 +171,21 @@ class TenantDatabaseManager {
     }
 
     /**
+     * Register schema definitions on a tenant connection
+     * @param {Connection} connection - The tenant mongoose connection
+     */
+    registerTenantModels(connection) {
+        if (!connection.models['User']) {
+            connection.model('User', UserSchema);
+        }
+        if (!connection.models['Campaign']) {
+            connection.model('Campaign', CampaignSchema);
+        }
+        // Add other tenant models here as you build them
+    }
+
+    /**
      * Get tenant metadata from master database
-     * @param {String} tenantId - Tenant identifier
-     * @returns {Object} Tenant document
      */
     async getTenantMetadata(tenantId) {
         try {
@@ -187,7 +205,6 @@ class TenantDatabaseManager {
 
     /**
      * Update tenant's last accessed timestamp
-     * @param {String} tenantId - Tenant identifier
      */
     async updateTenantLastAccess(tenantId) {
         try {
@@ -203,7 +220,6 @@ class TenantDatabaseManager {
 
     /**
      * Close specific tenant connection
-     * @param {String} tenantId - Tenant identifier
      */
     async closeTenantConnection(tenantId) {
         const connection = this.connections.get(tenantId);

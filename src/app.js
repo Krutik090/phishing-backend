@@ -10,6 +10,7 @@ const { rateLimitMiddleware } = require('./middleware/rateLimiter');
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const sanitize = require('./middleware/sanitize');
 
+const tenantDBManager = require('./config/tenantDatabase');
 const superadminRoutes = require('./routes/superadminRoutes');
 const authRoutes = require('./routes/authRoutes');
 

@@ -1,6 +1,7 @@
 // src/services/tenantService.js
 const tenantDBManager = require('../config/tenantDatabase');
 const logger = require('../config/logger');
+const mongoose = require('mongoose'); // Needed for session
 const {
     generateTenantId,
     generateInvitationToken,
@@ -34,12 +35,11 @@ class TenantService {
     async createTenant(tenantData, superadminId) {
         await this.ensureIndexes();
 
-        let transactionCommitted = false;
-        let tenantCreated = null;
-        let invitationCreated = null;
+        // Start session on Master DB
+        const session = await tenantDBManager.masterConnection.startSession();
+        session.startTransaction();
 
         try {
-
             // 1. Validate input
             if (!tenantData.organizationName || !tenantData.subdomain || !tenantData.adminEmail) {
                 throw new ApiError(400, 'Organization name, subdomain, and admin email are required');
@@ -100,7 +100,6 @@ class TenantService {
             });
 
             await tenant.save({ session });
-            tenantCreated = tenant;
             logger.info(`✅ Tenant record created: ${tenantId}`);
 
             // 7. Create invitation for primary admin
@@ -120,28 +119,33 @@ class TenantService {
             });
 
             await invitation.save({ session });
-            invitationCreated = invitation;
             logger.info(`✅ Invitation created for: ${tenantData.adminEmail}`);
 
-            // 8. Commit transaction
+            // 8. Commit transaction (Master DB work done)
             await session.commitTransaction();
-            transactionCommitted = true;
+            session.endSession();
             logger.info(`✅ Transaction committed successfully`);
 
-            // 9. Create tenant database (AFTER transaction)
+            // 9. Initialize Tenant Database (Outside Transaction)
+            // This is crucial: connecting allows our new registerTenantModels to run
             try {
+                // This call now AUTO-REGISTERS the models via tenantDatabase.js logic
                 const tenantConnection = await tenantDBManager.getTenantConnection(tenantId);
-                await this.initializeTenantSchema(tenantConnection);
-                logger.info(`✅ Tenant database initialized: ${dbName}`);
+                
+                // Explicitly create indexes for the new tenant to ensure performance
+                await tenantConnection.model('User').createIndexes();
+                await tenantConnection.model('Campaign').createIndexes();
+                
+                logger.info(`✅ Tenant database initialized and indexed: ${dbName}`);
             } catch (dbError) {
-                // Manual rollback: Delete tenant and invitation
+                // Manual rollback of master data if tenant DB setup fails
+                logger.error(`❌ Tenant DB Init Failed: ${dbError.message}. Rolling back master data.`);
                 await Tenant.deleteOne({ tenantId });
                 await Invitation.deleteOne({ _id: invitation._id });
-                logger.error(`Failed to initialize tenant DB, rolled back: ${dbError.message}`);
                 throw new ApiError(500, `Failed to initialize tenant database: ${dbError.message}`);
             }
 
-            logger.info(`✅ Tenant creation completed: ${subdomain}`);
+            logger.info(`✅ Tenant creation workflow completed: ${subdomain}`);
 
             // 10. Send invitation email (async)
             this.sendInvitationEmail(invitation, tenant).catch(err => {
@@ -167,35 +171,11 @@ class TenantService {
             };
 
         } catch (error) {
-           
+            if (session.inTransaction()) {
+                await session.abortTransaction();
+                session.endSession();
+            }
             logger.error(`❌ Tenant creation failed: ${error.message}`);
-            throw error;
-        }
-    }
-
-
-    /**
-     * Initialize tenant database with collections and indexes
-     */
-    async initializeTenantSchema(connection) {
-        try {
-            // Import schemas
-            const { schema: UserSchema } = require('../models/tenant/User');
-            const { schema: CampaignSchema } = require('../models/tenant/Campaign');
-
-            // Create models
-            const User = connection.model('User', UserSchema);
-            const Campaign = connection.model('Campaign', CampaignSchema);
-
-            // Create indexes
-            await User.createIndexes();
-            await Campaign.createIndexes();
-
-            logger.info('📚 Tenant schema initialized with all collections and indexes');
-
-            return true;
-        } catch (error) {
-            logger.error(`Failed to initialize tenant schema: ${error.message}`);
             throw error;
         }
     }
@@ -380,7 +360,8 @@ class TenantService {
                 tenant.databaseName
             );
 
-            const tempConnection = await mongoose.createConnection(connectionString);
+            // Use a separate temp connection to drop the DB to avoid interfering with pool
+            const tempConnection = await mongoose.createConnection(connectionString).asPromise();
             await tempConnection.dropDatabase();
             await tempConnection.close();
 
@@ -414,6 +395,7 @@ class TenantService {
             const tenant = await this.getTenantById(tenantId);
             const tenantConnection = await tenantDBManager.getTenantConnection(tenantId);
 
+            // Models are now guaranteed to be registered by tenantDatabase.js
             const User = tenantConnection.model('User');
             const Campaign = tenantConnection.model('Campaign');
 
@@ -464,7 +446,7 @@ class TenantService {
             logger.info(`   Email: ${invitation.email}`);
             logger.info(`   Organization: ${tenant.organizationName}`);
 
-            // TODO: Implement actual email sending
+            // TODO: Implement actual email sending via emailService
             // await emailService.sendInvitationEmail({
             //     to: invitation.email,
             //     organizationName: tenant.organizationName,
